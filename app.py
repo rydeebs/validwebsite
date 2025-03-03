@@ -9,6 +9,14 @@ from googlesearch import search
 import concurrent.futures
 import io
 import os
+import socket
+import random
+import logging
+
+# Set up logging
+logging.basicConfig(level=logging.INFO, 
+                    format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
 
 st.set_page_config(page_title="Website Verifier", layout="wide")
 
@@ -23,21 +31,72 @@ def check_url(url):
     
     try:
         headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+            'Accept-Language': 'en-US,en;q=0.5',
+            'Connection': 'keep-alive',
+            'Upgrade-Insecure-Requests': '1',
+            'DNT': '1'
         }
-        response = requests.get(url, timeout=10, headers=headers, allow_redirects=True)
+        
+        # First check if domain resolves (DNS check)
+        try:
+            import socket
+            domain = urlparse(url).netloc
+            socket.gethostbyname(domain)
+        except socket.gaierror:
+            return False, f"DNS resolution failed: Cannot resolve hostname '{domain}'"
+        
+        # Now attempt to connect with improved timeout and retry settings
+        response = requests.get(
+            url, 
+            timeout=(5, 20),  # (connect timeout, read timeout)
+            headers=headers, 
+            allow_redirects=True,
+            verify=True       # SSL verification
+        )
         
         # Check if response is a success (200 OK)
         if response.status_code == 200:
             # Check if the page is not a common error page
             content = response.text.lower()
-            if any(term in content for term in ['404 not found', 'page not found', 'site not found', 'access denied']):
+            error_indicators = [
+                '404 not found', 
+                'page not found', 
+                'site not found', 
+                'access denied',
+                'forbidden',
+                'error 404',
+                'server error',
+                'service unavailable'
+            ]
+            if any(term in content for term in error_indicators):
                 return False, f"Page content indicates error: Status code {response.status_code}"
+            
+            # Check for very small responses which might be error pages
+            if len(content) < 500:
+                if not any(term in content for term in ['redirect', 'loading']):
+                    return False, "Response too small, likely an error page"
+                
             return True, response.url
         else:
             return False, f"HTTP Status code: {response.status_code}"
+    
+    except requests.exceptions.ConnectTimeout:
+        return False, "Connection timed out while attempting to connect to the server"
+    except requests.exceptions.ReadTimeout:
+        return False, "Server took too long to respond (read timeout)"
+    except requests.exceptions.SSLError:
+        return False, "SSL certificate verification failed"
+    except requests.exceptions.ConnectionError as e:
+        if "RemoteDisconnected" in str(e):
+            return False, "Remote server closed connection unexpectedly"
+        elif "NameResolutionError" in str(e):
+            return False, "Domain name resolution failed (DNS error)"
+        else:
+            return False, f"Connection error: {str(e)}"
     except requests.exceptions.RequestException as e:
-        return False, str(e)
+        return False, f"Request failed: {str(e)}"
 
 # Function to clean and parse URL domain
 def get_search_query(url, country=None):
@@ -51,8 +110,13 @@ def get_search_query(url, country=None):
     # Replace symbols with spaces
     domain = re.sub(r'[-_]', ' ', domain)
     
+    # Clean up the domain by removing common terms that aren't part of company name
+    terms_to_remove = ['shop', 'store', 'online', 'official', 'site', 'website']
+    domain_words = domain.split()
+    domain_cleaned = ' '.join(word for word in domain_words if word.lower() not in terms_to_remove)
+    
     # Build the search query
-    search_query = domain + " factory manufacturing supplier"
+    search_query = domain_cleaned + " factory manufacturing supplier official website"
     
     # Add country to the search query if provided
     if country and isinstance(country, str) and len(country.strip()) > 0:
@@ -63,62 +127,151 @@ def get_search_query(url, country=None):
     
     return search_query
 
+# Function to get company name from URL
+def extract_company_name(url):
+    """Extract the likely company name from a URL"""
+    # Remove http://, https://, www.
+    domain = urlparse(url).netloc if urlparse(url).netloc else url
+    domain = domain.replace('www.', '')
+    
+    # Remove common TLDs and country codes
+    domain = re.sub(r'\.(com|net|org|co|io|gov|edu|uk|us|ca|au|de|fr|jp|cn|in|br).*', '', domain)
+    
+    # Replace dashes and underscores with spaces
+    domain = re.sub(r'[-_]', ' ', domain)
+    
+    # Capitalize each word
+    words = domain.split()
+    company_name = ' '.join(word.capitalize() for word in words)
+    
+    return company_name
+
 # Function to find alternative URL via Google search
 def find_alternative_url(url, country=None):
+    company_name = extract_company_name(url)
     search_query = get_search_query(url, country)
-    try:
-        # Store the last search query if session state exists
-        if 'last_search_query' in st.session_state:
-            st.session_state['last_search_query'] = search_query
-        
-        for result in search(search_query, num=5, stop=5, pause=2):
-            # Verify if the result is a valid website
-            is_valid, result_url = check_url(result)
-            if is_valid:
-                return result_url
-    except Exception as e:
-        return f"Search error: {str(e)}"
     
+    # Store for debugging purposes
+    if 'last_search_query' in st.session_state:
+        st.session_state['last_search_query'] = search_query
+    
+    # Try different search strategies
+    search_attempts = [
+        # First attempt: Full search query with company and industry terms
+        {"query": search_query, "num": 5, "stop": 5},
+        
+        # Second attempt: Just company name + country + "official website"
+        {"query": f"{company_name} {country if country else ''} official website", "num": 5, "stop": 5},
+        
+        # Third attempt: Just company name + "manufacturing" or "factory"
+        {"query": f"{company_name} manufacturing factory", "num": 5, "stop": 5}
+    ]
+    
+    for attempt in search_attempts:
+        try:
+            for result in search(attempt["query"], num=attempt["num"], stop=attempt["stop"], pause=2):
+                try:
+                    # Skip certain domains that are likely not company websites
+                    if any(domain in result.lower() for domain in [
+                        'facebook.com', 'linkedin.com', 'instagram.com', 'twitter.com', 
+                        'youtube.com', 'pinterest.com', 'wikipedia.org', 'yelp.com',
+                        'google.com', 'amazon.com', 'ebay.com', 'alibaba.com'
+                    ]):
+                        continue
+                    
+                    # Verify if the result is a valid website
+                    is_valid, result_url = check_url(result)
+                    if is_valid:
+                        return result_url
+                except Exception as e:
+                    # If a specific search result fails, continue to the next one
+                    continue
+        except Exception as e:
+            # If this search strategy fails, try the next one
+            continue
+    
+    # If all strategies fail
     return "No valid alternative found"
 
 # Function to process a single row
-def process_row(row_data, url_column, country_column=None, progress_bar=None):
-    url = row_data[url_column]
-    result = {}
+def process_row(row_data, url_column, country_column=None, 
+                connection_timeout=5, read_timeout=15, max_search_results=5,
+                use_multiple_strategies=True, randomize_delay=True,
+                progress_bar=None):
+    try:
+        url = row_data[url_column]
+        result = {}
+        
+        # Copy all original data
+        for col in row_data.index:
+            result[col] = row_data[col]
+        
+        # Get country if country column is provided
+        country = None
+        if country_column and country_column in row_data:
+            country = row_data[country_column]
+        
+        # Log the URL being processed
+        logger.info(f"Processing URL: {url}")
+        
+        # Add random delay if enabled
+        if randomize_delay:
+            delay = random.uniform(0.5, 2.0)
+            time.sleep(delay)
+        
+        # Check if URL is valid
+        is_valid, message = check_url(url)
+        result['Original URL'] = url
+        result['Is Valid'] = is_valid
+        result['Status Message'] = message
+        
+        # Store search parameters
+        if country:
+            result['Country Used'] = country
+        
+        # If not valid, find alternative
+        if not is_valid:
+            logger.info(f"URL invalid: {url}. Searching for alternative...")
+            alternative_url = find_alternative_url(url, country)
+            result['Alternative URL'] = alternative_url
+            result['Final URL'] = alternative_url if alternative_url and not alternative_url.startswith("Search error") and not alternative_url == "No valid alternative found" else url
+            
+            # Log the result
+            if alternative_url and not alternative_url.startswith("Search error") and not alternative_url == "No valid alternative found":
+                logger.info(f"Found alternative URL: {alternative_url}")
+            else:
+                logger.info(f"No valid alternative found for: {url}")
+        else:
+            result['Alternative URL'] = ""
+            result['Final URL'] = url
+            logger.info(f"URL is valid: {url}")
+        
+        # Update progress bar if provided
+        if progress_bar is not None:
+            progress_bar.progress(1)
+        
+        return result
     
-    # Copy all original data
-    for col in row_data.index:
-        result[col] = row_data[col]
-    
-    # Get country if country column is provided
-    country = None
-    if country_column and country_column in row_data:
-        country = row_data[country_column]
-    
-    # Check if URL is valid
-    is_valid, message = check_url(url)
-    result['Original URL'] = url
-    result['Is Valid'] = is_valid
-    result['Status Message'] = message
-    
-    # Store search parameters
-    if country:
-        result['Country Used'] = country
-    
-    # If not valid, find alternative
-    if not is_valid:
-        alternative_url = find_alternative_url(url, country)
-        result['Alternative URL'] = alternative_url
-        result['Final URL'] = alternative_url if alternative_url and not alternative_url.startswith("Search error") and not alternative_url == "No valid alternative found" else url
-    else:
-        result['Alternative URL'] = ""
-        result['Final URL'] = url
-    
-    # Update progress bar if provided
-    if progress_bar is not None:
-        progress_bar.progress(1)
-    
-    return result
+    except Exception as e:
+        # Handle any unexpected errors during processing
+        logger.error(f"Error processing row with URL {url if 'url' in locals() else 'unknown'}: {str(e)}")
+        
+        # Create a minimal result with error information
+        error_result = {}
+        for col in row_data.index:
+            error_result[col] = row_data[col]
+        
+        error_result['Original URL'] = url if 'url' in locals() else row_data.get(url_column, "Unknown")
+        error_result['Is Valid'] = False
+        error_result['Status Message'] = f"Processing error: {str(e)}"
+        error_result['Alternative URL'] = ""
+        error_result['Final URL'] = url if 'url' in locals() else ""
+        
+        # Update progress bar
+        if progress_bar is not None:
+            progress_bar.progress(1)
+        
+        return error_result
 
 def main():
     # Initialize session state for debugging
@@ -171,13 +324,19 @@ def main():
             col1, col2 = st.columns(2)
             with col1:
                 batch_size = st.slider("Batch size (higher may be faster but could hit rate limits)", 
-                                      min_value=1, max_value=20, value=5)
+                                      min_value=1, max_value=20, value=3)
             with col2:
                 max_workers = st.slider("Number of parallel workers", 
-                                       min_value=1, max_value=10, value=3)
+                                       min_value=1, max_value=5, value=2)
             
             # Advanced options
             with st.expander("Advanced Options"):
+                st.markdown("### Connection Settings")
+                connection_timeout = st.slider("Connection timeout (seconds)", 
+                                      min_value=3, max_value=30, value=5)
+                read_timeout = st.slider("Read timeout (seconds)", 
+                                      min_value=5, max_value=60, value=15)
+                
                 st.markdown("### Search Enhancement")
                 include_industry = st.checkbox("Include industry-specific terms in search", value=True)
                 if include_industry:
@@ -185,9 +344,16 @@ def main():
                         "Industry-specific search terms (comma separated)",
                         value="factory,manufacturing,supplier,producer"
                     )
+                    
+                st.markdown("### Google Search Settings")
+                max_search_results = st.slider("Maximum search results to check per URL", 
+                                      min_value=3, max_value=10, value=5)
+                use_multiple_search_strategies = st.checkbox("Use multiple search strategies for better results", value=True)
+                
                 st.markdown("### Rate Limiting Protection")
                 sleep_time = st.slider("Sleep time between batches (seconds)", 
-                                       min_value=1, max_value=10, value=2)
+                                       min_value=1, max_value=15, value=5)
+                randomize_delay = st.checkbox("Add random delay between requests (recommended)", value=True)
             
             if st.button("Start Verification"):
                 # Initialize results list
@@ -199,27 +365,72 @@ def main():
                 progress_bar = st.progress(0.0)
                 status_text = st.empty()
                 
+                # Create a debug log area
+                debug_log = st.empty()
+                
+                # Setup a handler to show logs in the Streamlit app
+                log_output = io.StringIO()
+                log_handler = logging.StreamHandler(log_output)
+                log_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
+                logger.addHandler(log_handler)
+                
                 # Process in batches with parallel execution
-                with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
-                    for i in range(0, total_rows, batch_size):
-                        batch_df = df.iloc[i:min(i+batch_size, total_rows)]
-                        
-                        # Update status
-                        status_text.text(f"{progress_text} Processing rows {i+1} to {min(i+batch_size, total_rows)} of {total_rows}")
-                        
-                        # Submit batch for processing
-                        future_to_row = {executor.submit(process_row, row, url_column, country_column): idx 
-                                         for idx, row in batch_df.iterrows()}
-                        
-                        # Collect results as they complete
-                        for future in concurrent.futures.as_completed(future_to_row):
-                            results.append(future.result())
+                try:
+                    with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+                        for i in range(0, total_rows, batch_size):
+                            batch_df = df.iloc[i:min(i+batch_size, total_rows)]
                             
-                            # Update progress
-                            progress_bar.progress(len(results) / total_rows)
-                        
-                        # Sleep to avoid rate limiting
-                        time.sleep(sleep_time)
+                            # Update status
+                            current_batch = f"{i+1} to {min(i+batch_size, total_rows)}"
+                            status_text.text(f"{progress_text} Processing rows {current_batch} of {total_rows}")
+                            logger.info(f"Processing batch: rows {current_batch} of {total_rows}")
+                            
+                            # Submit batch for processing with additional parameters
+                            future_to_row = {
+                                executor.submit(
+                                    process_row, 
+                                    row, 
+                                    url_column, 
+                                    country_column,
+                                    connection_timeout,
+                                    read_timeout,
+                                    max_search_results,
+                                    use_multiple_search_strategies,
+                                    randomize_delay
+                                ): idx for idx, row in batch_df.iterrows()
+                            }
+                            
+                            # Collect results as they complete
+                            for future in concurrent.futures.as_completed(future_to_row):
+                                try:
+                                    result = future.result()
+                                    results.append(result)
+                                    
+                                    # Update progress
+                                    current_progress = len(results) / total_rows
+                                    progress_bar.progress(current_progress)
+                                    
+                                    # Update log display periodically
+                                    if len(results) % 5 == 0 or len(results) == total_rows:
+                                        debug_log.text_area("Processing Log", log_output.getvalue(), height=150)
+                                        
+                                except Exception as e:
+                                    logger.error(f"Error getting result from future: {str(e)}")
+                            
+                            # Sleep to avoid rate limiting with optional randomization
+                            actual_sleep = sleep_time
+                            if randomize_delay:
+                                actual_sleep = sleep_time * (0.8 + 0.4 * random.random())  # 80% to 120% of sleep_time
+                            
+                            logger.info(f"Completed batch. Sleeping for {actual_sleep:.2f} seconds...")
+                            time.sleep(actual_sleep)
+                
+                except Exception as e:
+                    st.error(f"Error during batch processing: {str(e)}")
+                    logger.error(f"Batch processing error: {str(e)}")
+                
+                # Final log update
+                debug_log.text_area("Processing Log", log_output.getvalue(), height=150)
                 
                 # Create and display results DataFrame
                 results_df = pd.DataFrame(results)
