@@ -1,4 +1,24 @@
 import streamlit as st
+
+# Initialize session state variables at the very top of the script
+if 'last_search_query' not in st.session_state:
+    st.session_state['last_search_query'] = ""
+if 'processing_complete' not in st.session_state:
+    st.session_state['processing_complete'] = False
+if 'results_df' not in st.session_state:
+    st.session_state['results_df'] = None
+if 'current_chunk' not in st.session_state:
+    st.session_state['current_chunk'] = 0
+if 'total_chunks' not in st.session_state:
+    st.session_state['total_chunks'] = 0
+if 'processing' not in st.session_state:
+    st.session_state['processing'] = False
+if 'stop_requested' not in st.session_state:
+    st.session_state['stop_requested'] = False
+if 'current_page' not in st.session_state:
+    st.session_state['current_page'] = 0
+
+# Now import all other libraries
 import pandas as pd
 import requests
 from bs4 import BeautifulSoup
