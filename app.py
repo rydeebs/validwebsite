@@ -432,7 +432,7 @@ def main():
 
 if __name__ == "__main__":
     main()
-, '', domain)
+    , '', domain)
     
     # Replace symbols with spaces
     domain = re.sub(r'[-_]', ' ', domain)
