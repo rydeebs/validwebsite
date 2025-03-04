@@ -431,23 +431,7 @@ def main():
 
 if __name__ == "__main__":
     main()
-    , '', domain)
-    
-    # Replace symbols with spaces
-    domain = re.sub(r'[-_]', ' ', domain)
-    
-    # Build the search query
-    search_query = domain + " factory manufacturing supplier"
-    
-    # Add country to the search query if provided
-    if country and isinstance(country, str) and len(country.strip()) > 0:
-        # Clean up country name
-        country = country.strip()
-        # Add country to search query
-        search_query += f" {country}"
-    
-    return search_query
-
+   
 # Function to find alternative URL via Google search
 def find_alternative_url(url):
     search_query = get_search_query(url)
