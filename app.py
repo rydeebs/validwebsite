@@ -44,7 +44,7 @@ def get_search_query(url, country=None):
     domain = urlparse(url).netloc if urlparse(url).netloc else url
     domain = domain.replace('www.', '')
     
-    # Remove common TLDs and country codes
+    # Remove common TLDs and country codes - fixed syntax
     domain = re.sub(r'\.(com|net|org|co|io|gov|edu|uk|us|ca|au|de|fr|jp|cn|in|br)', '', domain)
     
     # Replace symbols with spaces
