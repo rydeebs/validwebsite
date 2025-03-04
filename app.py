@@ -45,8 +45,7 @@ def get_search_query(url, country=None):
     domain = domain.replace('www.', '')
     
     # Remove common TLDs and country codes
-    tld_pattern = r'\.(com|net|org|co|io|gov|edu|uk|us|ca|au|de|fr|jp|cn|in|br).*$'
-    domain = re.sub(tld_pattern, '', domain)
+    domain = re.sub(r'\.(com|net|org|co|io|gov|edu|uk|us|ca|au|de|fr|jp|cn|in|br)', '', domain)
     
     # Replace symbols with spaces
     domain = re.sub(r'[-_]', ' ', domain)
