@@ -125,7 +125,7 @@ def main():
     st.title("Website URL Verifier")
     st.write("Upload a spreadsheet with website URLs to verify and find alternatives for invalid ones.")
     
-    uploaded_file = st.file_uploader("Choose an Excel or CSV file", type=['xlsx', 'csv'])
+    uploaded_file = st.file_uploader("Choose an Excel or CSV file", type=['xlsx', 'csv'], key="main_file_uploader")
     
     if uploaded_file is not None:
         try:
